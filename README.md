@@ -1,27 +1,11 @@
 # Chaos to Knowledge: Noise-Entropy Augmentation in Robotic Applications of Reinforcement Learning
 
-This repository contains code and resources for implementing **"Chaos to Knowledge: Noise-Entropy Augmentation in Robotic Applications of Reinforcement Learning"** paper. The techniques presented here aim to enhance the performance and robustness of reinforcement learning algorithms in robotic systems by leveraging noise-entropy augmentation properties.
+This research examines the integration of entropy regularization and noise incorporation to advance reinforcement learning for high-dimensional tasks in robotic environments. By treating noise and entropy as interconnected elements of an informational framework, and combining them we develop a novel model that exhibits greater resilience to environmental disturbances and superior navigation of action possibilities. Evaluations in MuJoCo settings contrast baseline TRPO with shannon entropy term modulated by a coheficient hyperpameter, showing that entropy-infused approaches expand action diversity, boost disturbance tolerance, and match algorithmic strengths to task demands. Outcomes confirm that linking entropy with noise yields a stable equilibrium between discovery and reliability, with enhanced models thriving in intricate scenarios. These insights advance the creation of flexible reinforcement learning systems for practical robotic use.
 
-# Usage
+## Usage
+To use this project: run `make install` for installation, `make experiments` to execute the paper's experiments, and `make report` to generate and visualize results.
 
-## Installation
-```bash
-make install
-```
-
-## Experiments
-To run the experiments as described in the paper, use the following command:
-```bash
-make experiments
-```
-
-## Report and Visualization
-To generate and visualize the results, use:
-```bash
-make report
-```
-
-# Citation
+## Citation
 If you find this work useful in your research, please consider citing the following paper:
 
 ```
