@@ -189,7 +189,7 @@ if __name__ == "__main__":
   # 1M timesteps is sufficient to see the trends in performance for these environments, sampling oonger runs 2M, 10M has not shown significant changes in trend
   timesteps = 1_000_000
   # For the lower-dimentionality environments, we can run 100 runs for better statistical significance and smoothing
-  num_runs = 100
+  num_runs = 20
 
   configs = []
   for i in [None, 0.1, 0.2, -0.1, -0.2]:
@@ -212,7 +212,7 @@ if __name__ == "__main__":
   run_experiment(configs, n_envs, timesteps, num_runs, n_eval_episodes)
 
   # Full exploration of the noise hyperparameter, but fewer runs since these are more anciliary, given that we know that -0.2 to 0.2 provides best results
-  num_runs = 10
+  num_runs = 5
   for i in [None, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, -0.3, -0.4, -0.5, -0.6, -0.7, -0.8, -0.9, -1.0]:
     configs.append(("HalfCheetah-v5", TRPOR, i))
     configs.append(("HalfCheetah-v5", TRPO, i))

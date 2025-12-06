@@ -215,3 +215,5 @@ assets/**/*.mp4
 reports/tmp
 reports/*.log
 reports/.tmp
+.logs/
+tree
