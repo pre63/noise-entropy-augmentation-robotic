@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-NUM_RUNS_PLOT = 5
+NUM_RUNS_PLOT = 100
 
 
 def load_file(args):
@@ -41,7 +41,7 @@ def load_data(compare_dir):
   selected_files = []
   for variant in variant_files:
     sorted_files = sorted(variant_files[variant])
-    for run_num, filename in sorted_files[NUM_RUNS_PLOT]:
+    for run_num, filename in sorted_files[:NUM_RUNS_PLOT]:
       selected_files.append(filename)
 
   all_data = {}
