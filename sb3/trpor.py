@@ -11,6 +11,7 @@ from stable_baselines3.common.utils import explained_variance
 from torch import nn
 from torch.nn import functional as F
 
+from sb3.noise import MonitoredEntropyInjectionWrapper
 from sb3.trpo import TRPO
 
 
@@ -96,6 +97,7 @@ class TRPOR(TRPO):
 
     # This will only loop once (get all data in one go)
     for rollout_data in self.rollout_buffer.get(batch_size=None):
+
       # Optional: sub-sample data for faster computation
       if self.sub_sampling_factor > 1:
         indices = slice(None, None, self.sub_sampling_factor)
@@ -136,6 +138,7 @@ class TRPOR(TRPO):
 
       # KL divergence
       kl_div = kl_divergence(distribution, old_distribution).mean()
+      kl_div_mean = kl_div.item()
 
       # Surrogate & KL gradient
       self.policy.optimizer.zero_grad()
@@ -208,6 +211,7 @@ class TRPOR(TRPO):
           kl_divergences.append(kl_div.item())
 
     # Critic update
+    value_grad_norms = []
     for _ in range(self.n_critic_updates):
       for rollout_data in self.rollout_buffer.get(self.batch_size):
         values_pred = self.policy.predict_values(rollout_data.observations)
@@ -216,6 +220,12 @@ class TRPOR(TRPO):
 
         self.policy.optimizer.zero_grad()
         value_loss.backward()
+        grad_norm_value = 0.0
+        for p in self.policy.value_net.parameters():
+          if p.grad is not None:
+            grad_norm_value += p.grad.norm(2) ** 2
+        grad_norm_value = grad_norm_value**0.5
+        value_grad_norms.append(grad_norm_value)
         # Removing gradients of parameters shared with the actor
         # otherwise it defeats the purposes of the KL constraint
         for param in actor_params:
@@ -225,7 +235,54 @@ class TRPOR(TRPO):
     self._n_updates += 1
     explained_var = explained_variance(self.rollout_buffer.values.flatten(), self.rollout_buffer.returns.flatten())
 
+    # Additional metrics
+    if hasattr(self.policy, "log_std"):
+      policy_stds = th.exp(self.policy.log_std).detach().cpu().numpy()
+    else:
+      policy_stds = np.array([0.0])
+
+    # Entropy
+    distribution = self.policy.get_distribution(rollout_data.observations)
+    entropies = distribution.entropy().detach().cpu().numpy()
+
+    # Noise stats
+    action_deltas = []
+    reward_deltas = []
+    if hasattr(self.env, "envs"):
+      for e in self.env.envs:
+        if isinstance(e, MonitoredEntropyInjectionWrapper):
+          a_deltas, r_deltas = e.get_noise_deltas()
+          action_deltas.extend(a_deltas)
+          reward_deltas.extend(r_deltas)
+    elif isinstance(self.env, MonitoredEntropyInjectionWrapper):
+      action_deltas, reward_deltas = self.env.get_noise_deltas()
+
+    advantages_numpy = advantages.detach().cpu().numpy()
+    po = policy_objective.detach().cpu().numpy()
+    rewards = self.rollout_buffer.rewards.flatten()
+
+    self._save_rollout_metrics(
+      kl_divergences,
+      explained_var,
+      value_losses,
+      policy_stds,
+      line_search_results,
+      None,  #
+      value_grad_norms,
+      advantages_numpy,
+      entropies,
+      action_deltas,
+      reward_deltas,
+      rewards,
+      po,
+      kl_div_mean,
+    )
+
     # Logs
+    # add serogate objecive and antropy
+    self.logger.record("train/entropy", np.mean(entropies))
+    self.logger.record("train/advantage_mean", np.mean(advantages_numpy))
+    self.logger.record("train/advantage_std", np.std(advantages_numpy))
     self.logger.record("train/policy_objective", np.mean(policy_objective_values))
     self.logger.record("train/value_loss", np.mean(value_losses))
     self.logger.record("train/kl_divergence_loss", np.mean(kl_divergences))

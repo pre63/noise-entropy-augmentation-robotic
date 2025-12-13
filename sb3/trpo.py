@@ -113,6 +113,8 @@ class TRPO(TRPO):
     action_deltas,
     reward_deltas,
     rewards,
+    policy_objective,
+    kl_div,
   ):
     """Overridable method for computing metrics."""
 
@@ -128,12 +130,13 @@ class TRPO(TRPO):
       }
 
     metrics = {
-      "explained_variance": float(explained_var),
-      "grad_norm_policy": float(grad_norm_policy),
+      "explained_variance": float(explained_var) if explained_var is not None else 0.0,
+      "grad_norm_policy": float(grad_norm_policy) if grad_norm_policy is not None else 0.0,
+      "policy_objective": float(policy_objective) if policy_objective is not None else 0.0,
+      "kl_div": float(kl_div) if kl_div is not None else 0.0,
     }
 
     for prefix, arr in [
-      ("kl_div", kl_divergences),
       ("value_loss", value_losses),
       ("line_search_success", [float(r) for r in line_search_results]),
       ("grad_norm_value", value_grad_norms),
@@ -215,6 +218,7 @@ class TRPO(TRPO):
 
       # KL divergence
       kl_div = kl_divergence(distribution, old_distribution).mean()
+      kl_div_mean = kl_div.item()
 
       # Surrogate & KL gradient
       self.policy.optimizer.zero_grad()
@@ -337,7 +341,7 @@ class TRPO(TRPO):
       action_deltas, reward_deltas = self.env.get_noise_deltas()
 
     advantages_numpy = advantages.detach().cpu().numpy()
-
+    po = policy_objective.detach().cpu().numpy()
     rewards = self.rollout_buffer.rewards.flatten()
 
     self._save_rollout_metrics(
@@ -346,16 +350,22 @@ class TRPO(TRPO):
       value_losses,
       policy_stds,
       line_search_results,
-      grad_norm_policy,
+      None,  #
       value_grad_norms,
       advantages_numpy,
       entropies,
       action_deltas,
       reward_deltas,
       rewards,
+      po,
+      kl_div_mean,
     )
 
     # Logs
+    # add serogate objecive and antropy
+    self.logger.record("train/entropy", np.mean(entropies))
+    self.logger.record("train/advantage_mean", np.mean(advantages_numpy))
+    self.logger.record("train/advantage_std", np.std(advantages_numpy))
     self.logger.record("train/policy_objective", np.mean(policy_objective_values))
     self.logger.record("train/value_loss", np.mean(value_losses))
     self.logger.record("train/kl_divergence_loss", np.mean(kl_divergences))

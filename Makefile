@@ -27,7 +27,7 @@ venv:
 
 install: venv
 
-fix:
+fix: setup
 	@echo "Will run black and isort on modified, added, untracked, or staged Python files"
 	@changed_files=$$(git diff --name-only --diff-filter=AM | grep '\.py$$'); \
 	untracked_files=$$(git ls-files --others --exclude-standard | grep '\.py$$'); \
@@ -45,12 +45,12 @@ clean:
 	@rm -rf .venv
 
 setup: 
-	@mkdir -p .logs
+	@mkdir -p ~logs
 	@mkdir -p reports
 	
 experiments: fix setup
 	@source .venv/bin/activate; \
-	PYTHONPATH=. python -m scripts.experiments 2>&1 | tee -a .logs/experiments.log
+	PYTHONPATH=. python -m scripts.experiments 2>&1 | tee -a ~logs/experiments
 
 report: fix setup
 	@rm -f reports/.tmp
@@ -61,3 +61,9 @@ report: fix setup
 actions: fix
 	@source .venv/bin/activate; \
 	PYTHONPATH=. python -m scripts.actions
+
+tune: fix
+	@mkdir -p ~logs
+	@touch ~logs/tune
+	@source .venv/bin/activate; \
+	PYTHONPATH=. python -m scripts.tune 2>&1 | tee -a ~logs/tune

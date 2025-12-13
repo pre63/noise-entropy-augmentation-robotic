@@ -1157,7 +1157,7 @@ if __name__ == "__main__":
   disable_downsampling = False
   disable_smoothing = False
 
-  base_compare_dirs = ["assets1"]
+  base_compare_dirs = ["assets"]
   for base_compare_dir in base_compare_dirs:
     subdirs = sorted(os.listdir(base_compare_dir))
     print("# Table of Contents")

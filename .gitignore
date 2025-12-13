@@ -219,9 +219,11 @@ reports/*.log
 reports/.tmp
 
 .logs/
+~logs/
 tree
 
-assets1/**/*.zip
-assets1/**/*.pkl
-assets1/**/*.mp4
-assets1/**/*.bin
+assets*/**/*.zip
+assets*/**/*.pkl
+assets*/**/*.mp4
+assets*/**/*.bin
+~archive

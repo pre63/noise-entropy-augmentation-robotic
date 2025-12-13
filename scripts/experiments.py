@@ -182,7 +182,7 @@ def run_experiment(configs, n_envs, total_timesteps, num_runs, n_eval_episodes):
 if __name__ == "__main__":
   # not relevant for research concerns
   n_envs = 8
-  n_eval_episodes = 100
+  n_eval_episodes = 20
 
   # Experimentation schedule
 
@@ -190,43 +190,38 @@ if __name__ == "__main__":
   timesteps = 1_000_000
 
   # Define environments and parameters
-  low_dim_envs = ["HalfCheetah-v5", "Hopper-v5", "Swimmer-v5"]
+  low_dim_envs = ["HalfCheetah-v5", "Hopper-v5", "Swimmer-v5", "Walker2d-v5"]
   humanoid_envs = ["Humanoid-v5", "HumanoidStandup-v5"]
+  full_sweep_envs = ["HalfCheetah-v5", "Humanoid-v5"]
   all_envs = low_dim_envs + humanoid_envs
   algos = [TRPOR, TRPO]
-  preferred_noises = [None, 0.1, 0.2, -0.1, -0.2]  # Emphasizing None as a preferred config
-  ancillary_noises = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, -0.3, -0.4, -0.5, -0.6, -0.7, -0.8, -0.9, -1.0]
+  preferred_noises = [None, 0.1, 0.2]  # Emphasizing None as a preferred config
+  ancillary_noises = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 
-  # Assign target runs
-  from collections import defaultdict
 
-  target_runs = defaultdict(int)
-
-  # All configs start with at least 5 runs
-  min_runs = 5
-
-  # Preferred configs (including None) for low-dim envs: up to 100 runs
-  for env in low_dim_envs:
-    for algo in algos:
-      for noise in preferred_noises:
-        target_runs[(env, algo, noise)] = 100
-
-  # Preferred configs (including None) for humanoid envs: up to 20 runs
-  for env in humanoid_envs:
-    for algo in algos:
-      for noise in preferred_noises:
-        target_runs[(env, algo, noise)] = 20
-
-  # Ancillary noises for all envs: 5 runs
+  # experiment schedule HalfhCheetah, and Humanoid get full sweeps all noie levels including None
+  # all other environemns get None, 0.1, 0.2
+  # we test both models TRPOR and TRPO on all envs
+  # we take 5 runs of all configurations 
+  # for the 2 full sweeps total runs are 2 x 11 noise levels x 2 algos x 5 runs = 220
+  # and for the rest total runs are 3 envs x 3 noise levels x 2 algos x 5 runs = 90
+  
   for env in all_envs:
-    for algo in algos:
-      for noise in ancillary_noises:
-        target_runs[(env, algo, noise)] = 5
+    configs = list(
+      itertools.product(
+        [env],
+        algos,
+        preferred_noises ,
+      )
+    )
+    run_experiment(configs, n_envs, timesteps, num_runs=5, n_eval_episodes=n_eval_episodes)
 
-  # Progressively gather runs: first 5 for all, then add to preferred, stop humanoid at 20, continue low-dim to 100
-  max_runs = max(target_runs.values())
-  for current_run in range(max_runs):
-    current_configs = [conf for conf, targ in target_runs.items() if current_run < targ]
-    print(f"Starting experiments for run {current_run + 1}/{max_runs} with {len(current_configs)} configurations.")
-    if current_configs:
-      run_experiment(current_configs, n_envs, timesteps, num_runs=1, n_eval_episodes=n_eval_episodes)
+  for env in full_sweep_envs:
+    configs = list(
+      itertools.product(
+        [env],
+        algos,
+        ancillary_noises,
+      )
+    )
+    run_experiment(configs, n_envs, timesteps, num_runs=5, n_eval_episodes=n_eval_episodes)
