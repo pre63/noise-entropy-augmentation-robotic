@@ -57,3 +57,7 @@ report: fix setup
 	@source .venv/bin/activate; \
 	PYTHONPATH=. python -m scripts.report 2>&1 | tee -a reports/.tmp
 	@mv reports/.tmp reports/report.md
+
+actions: fix
+	@source .venv/bin/activate; \
+	PYTHONPATH=. python -m scripts.actions
