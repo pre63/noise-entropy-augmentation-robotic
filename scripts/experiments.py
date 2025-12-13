@@ -198,20 +198,19 @@ if __name__ == "__main__":
   preferred_noises = [None, 0.1, 0.2]  # Emphasizing None as a preferred config
   ancillary_noises = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 
-
   # experiment schedule HalfhCheetah, and Humanoid get full sweeps all noie levels including None
   # all other environemns get None, 0.1, 0.2
   # we test both models TRPOR and TRPO on all envs
-  # we take 5 runs of all configurations 
+  # we take 5 runs of all configurations
   # for the 2 full sweeps total runs are 2 x 11 noise levels x 2 algos x 5 runs = 220
   # and for the rest total runs are 3 envs x 3 noise levels x 2 algos x 5 runs = 90
-  
+
   for env in all_envs:
     configs = list(
       itertools.product(
         [env],
         algos,
-        preferred_noises ,
+        preferred_noises,
       )
     )
     run_experiment(configs, n_envs, timesteps, num_runs=5, n_eval_episodes=n_eval_episodes)

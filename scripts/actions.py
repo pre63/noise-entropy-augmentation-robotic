@@ -38,9 +38,9 @@ def make_env(env_id):
 
 
 if __name__ == "__main__":
-  print("Generating normalized sum delta heatmaps for multiple environments...")
+  print("Generating z-score normalized signed delta heatmaps for multiple environments...")
   # Create the environments
-  env_ids = ["HalfCheetah-v5", "Hopper-v5", "Swimmer-v5", "Humanoid-v5", "HumanoidStandup-v5"]
+  env_ids = ["HalfCheetah-v5", "Hopper-v5", "Swimmer-v5", "Walker2d-v5", "Humanoid-v5", "HumanoidStandup-v5"]
 
   # Parameters
   seed = 42
@@ -63,6 +63,7 @@ if __name__ == "__main__":
 
   # Collect data for all environments
   mean_delta_matrices = {}
+  std_deltas = {}
   for env_id in env_ids:
     diff_list = []
     for run in range(num_runs):
@@ -70,12 +71,16 @@ if __name__ == "__main__":
       np.random.seed(seed + run)
       noisy_env.reset(seed=seed + run)
       clean_acts, noisy_acts = collect_actions(noisy_env, num_steps=num_steps, render=False)
-      diff_acts = np.abs(noisy_acts - clean_acts)
+      diff_acts = noisy_acts - clean_acts
       diff_list.append(diff_acts)
       noisy_env.close()
     all_diffs = np.stack(diff_list, axis=0)  # (num_runs, num_steps, num_dims)
     mean_diffs = np.mean(all_diffs, axis=0)  # (num_steps, num_dims)
     mean_delta_matrices[env_id] = mean_diffs.T  # (num_dims, num_steps)
+
+    # Compute std_delta for z-score
+    std_delta = np.std(all_diffs)
+    std_deltas[env_id] = std_delta
 
   # Create one figure with subplots in one row
   fig, axs = plt.subplots(1, len(env_ids), figsize=(30, 5))  # Wider for better proportioning
@@ -86,29 +91,29 @@ if __name__ == "__main__":
   im = None  # To hold the last image for colorbar
   for i, env_id in enumerate(env_ids):
     matrix = mean_delta_matrices[env_id]
-    env_min = np.min(matrix)
-    env_max = np.max(matrix)
-    if env_max > env_min:
-      normalized_matrix = (matrix - env_min) / (env_max - env_min)
-    else:
+    std_delta = std_deltas[env_id]
+    se = std_delta / np.sqrt(num_runs)
+    if se == 0:
       normalized_matrix = np.zeros_like(matrix)
-
+    else:
+      normalized_matrix = matrix / se
     # Heatmap with simplified labels
-    im = axs[i].imshow(normalized_matrix, aspect="auto", cmap="Reds", vmin=0, vmax=1)
+    im = axs[i].imshow(normalized_matrix, aspect="auto", cmap="RdBu", vmin=-5, vmax=5)
     axs[i].set_xlabel("Timestep")
     axs[i].set_ylabel("Dimension")
     axs[i].set_title(env_id)
 
   # Add a single shared colorbar on the right
   cb_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])  # Position: right, bottom, width, height
-  fig.colorbar(im, cax=cb_ax)
+  cbar = fig.colorbar(im, cax=cb_ax)
+  cbar.set_label("Z-score")
 
   # Add a paper-like caption below the plots
-  # caption = "Heatmaps showing normalized aggregate action perturbations for simulated robotics tasks under uniform noise (σ=0.1). Values represent average of absolute differences per dimension per timestep across 100 runs, min-max normalized per task."
+  # caption = "Heatmaps showing z-scores of aggregate action perturbations for simulated robotics tasks under uniform noise (σ=0.1). Values represent z-scores of average signed differences per dimension per timestep across 1000 runs."
   # fig.text(0.5, 0.01, caption, ha="center", va="bottom", wrap=True, fontsize=10)
 
   plt.tight_layout(rect=[0, 0.05, 0.91, 1])  # Adjust layout to make room for caption and colorbar
 
   # Save to file
   os.makedirs("assets", exist_ok=True)
-  plt.savefig("assets/multi_env_normalized_sum_delta_heatmaps.png")
+  plt.savefig("assets/multi_env_zscore_signed_delta_heatmaps.png")
