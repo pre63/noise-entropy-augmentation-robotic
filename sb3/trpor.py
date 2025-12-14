@@ -137,7 +137,6 @@ class TRPOR(TRPO):
 
       # KL divergence
       kl_div = kl_divergence(distribution, old_distribution).mean()
-      kl_div_mean = kl_div.item()
 
       # Surrogate & KL gradient
       self.policy.optimizer.zero_grad()

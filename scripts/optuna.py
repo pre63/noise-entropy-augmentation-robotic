@@ -71,8 +71,8 @@ def suggest_hyperparams(trial):
   params["ent_coef"] = trial.suggest_categorical("ent_coef", ent_coef_options)
   params["target_kl"] = trial.suggest_categorical("target_kl", [0.01, 0.03, 0.05, 0.07, 0.1, 0.3, 0.5])
   params["learning_rate"] = trial.suggest_categorical("learning_rate", learning_rate_options)
-  params["n_critic_updates"] = trial.suggest_categorical("n_critic_updates", [5, 10])
   params["sub_sampling_factor"] = trial.suggest_categorical("sub_sampling_factor", [0.1, 0.5, 1.0])
+  params["n_critic_updates"] = trial.suggest_categorical("n_critic_updates", [5, 10])
   params["net_arch_str"] = trial.suggest_categorical("net_arch", ["small", "medium"])
   params["gamma"] = 0.99
   params["gae_lambda"] = 0.95
@@ -83,27 +83,24 @@ def suggest_hyperparams(trial):
   return params
 
 
-def auc(learning_curve):
-  partial_auc = 0.0
-  for i in range(1, len(learning_curve)):
-    x1, y1 = learning_curve[i - 1]
-    x2, y2 = learning_curve[i]
-    partial_auc += (y1 + y2) / 2 * (x2 - x1)
-  return partial_auc
-
-
-def recent_mean_reward(vec_env, prev_episode_counts, n_envs):
+def recent_metrics(vec_env, prev_episode_counts, n_envs):
   current_rewards_lists = vec_env.venv.get_attr("episode_returns")
+  current_lengths_lists = vec_env.venv.get_attr("episode_lengths")
   recent_rewards = []
+  recent_lengths = []
   for i in range(n_envs):
-    recent = current_rewards_lists[i][prev_episode_counts[i] :]
-    recent_rewards.extend(recent)
-    prev_episode_counts[i] += len(recent)
+    recent_r = current_rewards_lists[i][prev_episode_counts[i] :]
+    recent_lengths_i = current_lengths_lists[i][prev_episode_counts[i] :]
+    recent_rewards.extend(recent_r)
+    recent_lengths.extend(recent_lengths_i)
+    prev_episode_counts[i] += len(recent_r)
   if len(recent_rewards) > 0:
-    recent_mean = np.mean(recent_rewards)
+    recent_mean_r = np.mean(recent_rewards)
+    recent_mean_l = np.mean(recent_lengths)
   else:
-    recent_mean = 0.0
-  return recent_mean
+    recent_mean_r = 0.0
+    recent_mean_l = 0.0
+  return recent_mean_r, recent_mean_l
 
 
 def objective(trial, env_id):
@@ -113,6 +110,7 @@ def objective(trial, env_id):
   else:
     net_arch = dict(pi=[128, 128], vf=[128, 128])
   policy_kwargs = dict(net_arch=net_arch, activation_fn=nn.Tanh)
+
   n_envs = 14
   noise_type = "uniform"
   noise_level = 0.1
@@ -137,26 +135,44 @@ def objective(trial, env_id):
     verbose=0,
     seed=42,
   )
+
   total_timesteps = 1_000_000
   eval_interval = 50_000
-  warmup_timesteps = 200_000
-  learning_curve = [(0, 0.0)]
   prev_episode_counts = [0] * n_envs
+
   for step in range(eval_interval, total_timesteps + 1, eval_interval):
-    if step <= warmup_timesteps:
-      model.learn(total_timesteps=eval_interval, reset_num_timesteps=False, progress_bar=False)
-    else:
-      model.learn(total_timesteps=eval_interval, reset_num_timesteps=False, progress_bar=False)
-    recent_mean = recent_mean_reward(vec_env, prev_episode_counts, n_envs)
-    learning_curve.append((step, recent_mean))
-    partial_auc = auc(learning_curve)
-    trial.report(partial_auc, step)
+    model.learn(total_timesteps=eval_interval, reset_num_timesteps=False, progress_bar=False)
+    recent_mean_r, recent_mean_l = recent_metrics(vec_env, prev_episode_counts, n_envs)
+
+    intermediate_metric = 1000 * recent_mean_r + 1000 * recent_mean_l
+    trial.report(intermediate_metric, step)
+
     if trial.should_prune():
       vec_env.close()
       raise optuna.TrialPruned()
-  print(f"Trial {trial.number} - AUC: {partial_auc:.2f}")
+
+  # Final evaluation without noise
+  eval_n_envs = n_envs
+  n_eval_episodes = 1000
+
+  eval_vec = SubprocVecEnv([make_env(env_id) for _ in range(eval_n_envs)])
+  eval_vec = VecNormalize(eval_vec, training=False, norm_obs=True, norm_reward=False, clip_obs=10.0)
+  eval_vec.obs_rms = vec_env.obs_rms.copy()
+
+  episode_rewards, episode_lengths = evaluate_policy(
+    model,
+    eval_vec,
+    n_eval_episodes=n_eval_episodes,
+    deterministic=True,
+    return_episode_rewards=True,
+  )
+  final_mean_r = np.mean(episode_rewards)
+  final_mean_l = np.mean(episode_lengths)
+  final_metric = 1000 * final_mean_r + 1000 * final_mean_l
+  print(f"Trial {trial.number} - Metric: {final_metric:.2f}")
+  eval_vec.close()
   vec_env.close()
-  return partial_auc
+  return final_metric
 
 
 if __name__ == "__main__":
@@ -165,7 +181,7 @@ if __name__ == "__main__":
   batch = 1000
   for env_id in envs:
     study_name = f"trpor-{env_id}-tuning"
-    dir_path = os.path.expanduser("~/.optuna")
+    dir_path = os.path.expanduser("~optuna")
     os.makedirs(dir_path, exist_ok=True)
     file_path = os.path.join(dir_path, f"{study_name}_log")
     backend = JournalFileBackend(file_path)
