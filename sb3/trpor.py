@@ -74,10 +74,9 @@ class TRPOR(TRPO):
 
     """
 
-  def __init__(self, *args, epsilon=0.2, ent_coef=0.01, batch_size=32, **kwargs):
+  def __init__(self, *args, ent_coef=0.01, batch_size=32, **kwargs):
     super().__init__(*args, **kwargs)
 
-    self.epsilon = epsilon
     self.ent_coef = ent_coef
     self.batch_size = batch_size
 
@@ -275,7 +274,7 @@ class TRPOR(TRPO):
       reward_deltas,
       rewards,
       po,
-      kl_div_mean,
+      kl_div,
     )
 
     # Logs
@@ -335,8 +334,6 @@ def sample_trpor_params(trial, n_actions, n_envs, additional_args):
 
   # Replay buffer capacity and reward threshold for buffer clearing
 
-  epsilon = trial.suggest_float("epsilon", 0.1, 0.9, step=0.05)
-
   orthogonal_init = trial.suggest_categorical("orthogonal_init", [True, False])
 
   n_timesteps = trial.suggest_categorical("n_timesteps", [100000])
@@ -348,7 +345,6 @@ def sample_trpor_params(trial, n_actions, n_envs, additional_args):
     "policy": "MlpPolicy",
     "n_timesteps": n_timesteps,
     "n_envs": n_envs,
-    "epsilon": epsilon,
     "ent_coef": ent_coef,
     "n_steps": n_steps,
     "batch_size": batch_size,

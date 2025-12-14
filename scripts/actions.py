@@ -4,6 +4,9 @@ import gymnasium as gym
 import matplotlib.pyplot as plt
 import numpy as np
 
+# Increase font sizes globally
+plt.rcParams.update({"font.size": 14})
+
 
 class LoggingUniformNoisyActionWrapper(gym.ActionWrapper):
   def __init__(self, env, noise_scale=0.1):
@@ -37,7 +40,51 @@ def make_env(env_id):
   return _init
 
 
+def getTitle(env_id):
+  titles = {
+    "HalfCheetah-v5": "HalfCheetah",
+    "Hopper-v5": "Hopper",
+    "Swimmer-v5": "Swimmer",
+    "Walker2d-v5": "Walker",
+    "Humanoid-v5": "Humanoid",
+    "HumanoidStandup-v5": "Standup",
+  }
+  return titles.get(env_id, env_id).lower()
+
+
+# Function to collect actions
+def collect_actions(noisy_env, num_steps, render=False):
+  clean_actions = []
+  noisy_actions = []
+  obs, _ = noisy_env.reset()
+  for _ in range(num_steps):
+    clean_action = noisy_env.action_space.sample()
+    clean_actions.append(clean_action.copy())
+    noisy_env.step(clean_action)  # Adds noise and logs inside
+    noisy_actions.append(noisy_env.last_noisy_action.copy())
+    if render:
+      noisy_env.render()
+  return np.array(clean_actions), np.array(noisy_actions)
+
+
 if __name__ == "__main__":
+  import matplotlib as mpl
+
+  mpl.rcParams.update(
+    {
+      "font.family": "monospace",
+      "font.size": 19,
+      "axes.labelsize": 19,
+      "axes.titlesize": 24,
+      "legend.fontsize": 24,
+      "xtick.labelsize": 19,
+      "ytick.labelsize": 19,
+      "axes.grid": True,
+      "grid.color": "gainsboro",
+      "grid.alpha": 0.5,
+    }
+  )
+
   print("Generating z-score normalized signed delta heatmaps for multiple environments...")
   # Create the environments
   env_ids = ["HalfCheetah-v5", "Hopper-v5", "Swimmer-v5", "Walker2d-v5", "Humanoid-v5", "HumanoidStandup-v5"]
@@ -46,20 +93,6 @@ if __name__ == "__main__":
   seed = 42
   num_runs = 1000
   num_steps = 50
-
-  # Function to collect actions
-  def collect_actions(noisy_env, num_steps, render=False):
-    clean_actions = []
-    noisy_actions = []
-    obs, _ = noisy_env.reset()
-    for _ in range(num_steps):
-      clean_action = noisy_env.action_space.sample()
-      clean_actions.append(clean_action.copy())
-      noisy_env.step(clean_action)  # Adds noise and logs inside
-      noisy_actions.append(noisy_env.last_noisy_action.copy())
-      if render:
-        noisy_env.render()
-    return np.array(clean_actions), np.array(noisy_actions)
 
   # Collect data for all environments
   mean_delta_matrices = {}
@@ -82,11 +115,9 @@ if __name__ == "__main__":
     std_delta = np.std(all_diffs)
     std_deltas[env_id] = std_delta
 
-  # Create one figure with subplots in one row
-  fig, axs = plt.subplots(1, len(env_ids), figsize=(30, 5))  # Wider for better proportioning
-
-  if len(env_ids) == 1:
-    axs = [axs]  # Ensure axs is iterable
+  # Create one figure with subplots in two rows
+  fig, axs = plt.subplots(2, 3, figsize=(18, 10))  # Adjusted for 2 rows, 3 columns
+  axs = axs.flatten()  # Flatten to iterate easily
 
   im = None  # To hold the last image for colorbar
   for i, env_id in enumerate(env_ids):
@@ -99,18 +130,16 @@ if __name__ == "__main__":
       normalized_matrix = matrix / se
     # Heatmap with simplified labels
     im = axs[i].imshow(normalized_matrix, aspect="auto", cmap="RdBu", vmin=-5, vmax=5)
-    axs[i].set_xlabel("Timestep")
-    axs[i].set_ylabel("Dimension")
-    axs[i].set_title(env_id)
+    axs[i].set_xlabel("Timestep", fontsize=19)
+    axs[i].set_ylabel("Dimension", fontsize=19)
+    axs[i].set_title(getTitle(env_id), fontsize=24)
+    axs[i].tick_params(labelsize=19)
 
   # Add a single shared colorbar on the right
   cb_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])  # Position: right, bottom, width, height
   cbar = fig.colorbar(im, cax=cb_ax)
-  cbar.set_label("Z-score")
-
-  # Add a paper-like caption below the plots
-  # caption = "Heatmaps showing z-scores of aggregate action perturbations for simulated robotics tasks under uniform noise (σ=0.1). Values represent z-scores of average signed differences per dimension per timestep across 1000 runs."
-  # fig.text(0.5, 0.01, caption, ha="center", va="bottom", wrap=True, fontsize=10)
+  cbar.set_label("Z-score", fontsize=19)
+  cbar.ax.tick_params(labelsize=19)
 
   plt.tight_layout(rect=[0, 0.05, 0.91, 1])  # Adjust layout to make room for caption and colorbar
 

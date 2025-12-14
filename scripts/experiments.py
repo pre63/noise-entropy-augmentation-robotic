@@ -155,6 +155,7 @@ def run_experiment(configs, n_envs, total_timesteps, num_runs, n_eval_episodes):
 
         # Evaluate inference stability
         mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=n_eval_episodes, deterministic=True)
+        print(f"    Inference evaluation over {n_eval_episodes} episodes: mean reward = {mean_reward}, std = {std_reward}")
 
         run_data = {
           "timesteps": list(range(1, len(raw_step_rewards) + 1)),
@@ -181,8 +182,8 @@ def run_experiment(configs, n_envs, total_timesteps, num_runs, n_eval_episodes):
 
 if __name__ == "__main__":
   # not relevant for research concerns
-  n_envs = 8
-  n_eval_episodes = 20
+  n_envs = 14
+  n_eval_episodes = 100
 
   # Experimentation schedule
 
