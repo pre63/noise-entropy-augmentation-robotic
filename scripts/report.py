@@ -1,4 +1,5 @@
 import argparse
+import bisect
 import os
 import pickle
 from concurrent.futures import ProcessPoolExecutor
@@ -6,9 +7,10 @@ from concurrent.futures import ProcessPoolExecutor
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.lines import Line2D
 
 NUM_RUNS_PLOT = 1000
-FIG_SIZE = (20, 10)
+FIG_SIZE = (24, 12)  # Wider and taller to accommodate side legend
 
 
 def load_file(args):
@@ -69,10 +71,48 @@ def load_data(compare_dir):
   return config_dict
 
 
+def compute_iqm(values):
+  if len(values) == 0:
+    return 0.0
+  sorted_values = np.sort(values)
+  n = len(sorted_values)
+  lower = int(np.ceil(0.25 * n))
+  upper = int(np.floor(0.75 * n)) + 1
+  if lower >= upper:
+    return np.mean(sorted_values)
+  iqm_values = sorted_values[lower:upper]
+  return np.mean(iqm_values)
+
+
+def generate_detailed_report(config_dict, config_names, episode_lists, per_run_total_steps, inference_means_lists, inference_stds_lists, env_id):
+  print(f"## Detailed Performance for {env_id}\n")
+  print("| Config | Run | AUC | Final Return | Max Return | Inference Mean | Inference Std | Stability |")
+  print("|--------|-----|-----|--------------|------------|----------------|---------------|-----------|")
+  for config_idx, config in enumerate(config_names):
+    original_config = config.replace("Noise ", "noise").replace(" ", "_")
+    if original_config not in config_dict:
+      continue
+    runs_data = sorted(config_dict[original_config], key=lambda x: x[0])
+    for r, (run_num, run_data) in enumerate(runs_data):
+      run_eps = episode_lists[config_idx][r]
+      run_total_ts = per_run_total_steps[config_idx][r]
+      auc = compute_episode_auc(run_eps, run_total_ts)
+      run_rets = [ep["return"] for ep in run_eps]
+      max_return = max(run_rets) if run_rets else 0.0
+      threshold_ts = 0.8 * run_total_ts
+      final_rets = [ep["return"] for ep in run_eps if ep["end_timestep"] > threshold_ts]
+      final_return = np.mean(final_rets) if final_rets else 0.0
+      inf_mean = inference_means_lists[config_idx][r]
+      inf_std = inference_stds_lists[config_idx][r]
+      stability = inf_mean / inf_std if inf_std > 0 else 0.0
+      print(f"| {config} | {run_num} | {auc:.2e} | {final_return:.2e} | {max_return:.2e} | {inf_mean:.2e} | {inf_std:.2e} | {stability:.2e} |")
+
+
 def prepare_lists(config_dict):
   config_names = sorted(config_dict.keys())
   step_rewards_lists = []
   episode_lists = []
+  run_numbers_lists = []
   episode_entropies_lists = []  # Kept for compatibility, but optional
   kl_lists = []
   surrogate_lists = []
@@ -84,6 +124,7 @@ def prepare_lists(config_dict):
     step_rewards_list = [run_data["step_rewards"] for _, run_data in runs_data]
     episode_rewards = [run_data["episode_rewards"] for _, run_data in runs_data]
     episode_end_timesteps = [run_data["episode_end_timesteps"] for _, run_data in runs_data]
+    run_numbers = [run_num for run_num, _ in runs_data]
     episode_list = []
     episode_entropies_list = []
     kl_list = []
@@ -104,13 +145,24 @@ def prepare_lists(config_dict):
 
     step_rewards_lists.append(step_rewards_list)
     episode_lists.append(episode_list)
+    run_numbers_lists.append(run_numbers)
     episode_entropies_lists.append(episode_entropies_list)
     kl_lists.append(kl_list)
     surrogate_lists.append(surrogate_list)
     inference_means_lists.append(inference_means_list)
     inference_stds_lists.append(inference_stds_list)
 
-  return config_names, step_rewards_lists, episode_lists, episode_entropies_lists, kl_lists, surrogate_lists, inference_means_lists, inference_stds_lists
+  return (
+    config_names,
+    step_rewards_lists,
+    episode_lists,
+    run_numbers_lists,
+    episode_entropies_lists,
+    kl_lists,
+    surrogate_lists,
+    inference_means_lists,
+    inference_stds_lists,
+  )
 
 
 def compute_timesteps_and_downsample(step_rewards_lists, disable_downsampling=False):
@@ -297,6 +349,78 @@ def plot_learning_curve(config_names, averaged_curves, bins, color_map, compare_
   plt.close()
 
 
+def plot_raw_learning_curves(config_names, episode_lists, run_numbers_lists, x_bins, total_timesteps, color_map, compare_dir, filename, title):
+  plt.figure(figsize=FIG_SIZE)
+  ax = plt.gca()
+  ax.set_facecolor("gainsboro")
+  ax.grid(True, color="darkgrey", linestyle=":")
+  for spine in ax.spines.values():
+    spine.set_edgecolor("darkgrey")
+
+  has_data = False
+  legend_elements = []
+
+  total_runs = sum(len(episode_lists[i]) for i in range(len(config_names)))
+
+  # Adaptive transparency and linewidth
+  if total_runs <= 10:
+    alpha = 1.0
+    linewidth_raw = 1.8
+  elif total_runs <= 20:
+    alpha = 0.9
+    linewidth_raw = 1.4
+  elif total_runs <= 50:
+    alpha = 0.8
+    linewidth_raw = 1.0
+  else:
+    alpha = 0.7
+    linewidth_raw = 0.8
+
+  for cfg_idx, config in enumerate(config_names):
+    color = color_map[config]
+    run_nums = run_numbers_lists[cfg_idx]
+    for run_idx, run_eps in enumerate(episode_lists[cfg_idx]):
+      if not run_eps:
+        continue
+      run_num = run_nums[run_idx]
+
+      # Ensure episodes sorted
+      run_eps = sorted(run_eps, key=lambda e: e["end_timestep"])
+
+      interval_starts = [0] + [ep["end_timestep"] for ep in run_eps]
+      interval_returns = [0.0] + [ep["return"] for ep in run_eps]
+      interval_starts.append(total_timesteps)
+      interval_returns.append(interval_returns[-1])
+
+      y_binned = []
+      for bin_x in x_bins:
+        k = bisect.bisect_right(interval_starts, bin_x) - 1
+        y_binned.append(interval_returns[max(k, 0)])
+
+      plt.plot(x_bins, y_binned, color=color, alpha=alpha, linewidth=linewidth_raw)
+      has_data = True
+
+      # Proxy for legend: thick solid line, opaque
+      legend_elements.append(Line2D([0], [0], color=color, lw=3, alpha=1.0, label=f"{config} Run {run_num}"))
+
+  if has_data:
+    # Multi-column if many entries
+    ncol = 1 if total_runs <= 20 else 2 if total_runs <= 50 else 3
+    ax.legend(
+      handles=legend_elements, loc="upper left", bbox_to_anchor=(1.02, 1), ncol=ncol, fontsize=12, title=f"Runs ({total_runs} total)", title_fontsize=14
+    )
+  else:
+    plt.text(0.5, 0.5, "No Data", ha="center", va="center", fontsize=20)
+
+  plt.subplots_adjust(right=0.72)  # Make room for legend on the right
+  plt.xlabel("timesteps")
+  plt.ylabel("Episode Return")
+  plt.title(title)
+  plt.tight_layout()
+  plt.savefig(os.path.join(compare_dir, filename))
+  plt.close()
+
+
 def plot_combined_metrics(config, averaged_episode, averaged_kl, averaged_surrogate, bins, color_map, compare_dir, filename, title, disable_smoothing=False):
   fig, axs = plt.subplots(3, 1, figsize=(20, 20), sharex=True)
   color = color_map[config]
@@ -455,6 +579,11 @@ def compute_config_metrics(config, episode_list, per_run_total_steps, inference_
       "avg_inference_mean": 0.0,
       "avg_inference_std": 0.0,
       "inference_stability": 0.0,
+      "iqm_auc": 0.0,
+      "iqm_final_return": 0.0,
+      "iqm_max_return": 0.0,
+      "iqm_inference_mean": 0.0,
+      "iqm_stability": 0.0,
     }
   per_run_all_ep_returns = [[ep["return"] for ep in run_eps] for run_eps in episode_list]
   per_run_max = [max(run_rets, default=0.0) for run_rets in per_run_all_ep_returns]
@@ -474,6 +603,14 @@ def compute_config_metrics(config, episode_list, per_run_total_steps, inference_
   avg_inference_mean = np.mean(inference_means_list)
   avg_inference_std = np.mean(inference_stds_list)
   inference_stability = avg_inference_mean / avg_inference_std if avg_inference_std > 0 else 0.0
+
+  iqm_auc = compute_iqm(per_run_auc)
+  iqm_final_return = compute_iqm(per_run_final)
+  iqm_max_return = compute_iqm(per_run_max)
+  iqm_inference_mean = compute_iqm(inference_means_list)
+  per_run_stability = [inference_means_list[r] / inference_stds_list[r] if inference_stds_list[r] > 0 else 0.0 for r in range(num_runs)]
+  iqm_stability = compute_iqm(per_run_stability)
+
   return {
     "config": config,
     "avg_final_return": avg_final_return,
@@ -484,13 +621,22 @@ def compute_config_metrics(config, episode_list, per_run_total_steps, inference_
     "avg_inference_mean": avg_inference_mean,
     "avg_inference_std": avg_inference_std,
     "inference_stability": inference_stability,
+    "iqm_auc": iqm_auc,
+    "iqm_final_return": iqm_final_return,
+    "iqm_max_return": iqm_max_return,
+    "iqm_inference_mean": iqm_inference_mean,
+    "iqm_stability": iqm_stability,
   }
 
 
 def generate_report(model_performances, env_id):
   print(f"# Performance Comparison for {env_id}\n")
-  print("| Config | AUC (Mean ± Std) | Final Return (Mean ± Std) | Max Return (Avg) | Inference Mean (± Std) | Stability |")
-  print("|--------|------------------|---------------------------|------------------|------------------------|-----------|")
+  print(
+    "| Config | AUC (Mean ± Std) | Final Return (Mean ± Std) | Max Return (Avg) | Inference Mean (± Std) | Stability | IQM AUC | IQM Final Return | IQM Max Return | IQM Inference Mean | IQM Stability |"
+  )
+  print(
+    "|--------|------------------|---------------------------|------------------|------------------------|-----------|---------|------------------|----------------|--------------------|---------------|"
+  )
 
   for perf in sorted(model_performances, key=lambda x: x["avg_auc"], reverse=True):
     auc_str = f"{perf['avg_auc']:.2e} ± {perf['std_auc']:.2e}"
@@ -498,8 +644,15 @@ def generate_report(model_performances, env_id):
     max_str = f"{perf['avg_max_return']:.2e}"
     inf_str = f"{perf['avg_inference_mean']:.2e} ± {perf['avg_inference_std']:.2e}"
     stab_str = f"{perf['inference_stability']:.2e}"
+    iqm_auc_str = f"{perf['iqm_auc']:.2e}"
+    iqm_final_str = f"{perf['iqm_final_return']:.2e}"
+    iqm_max_str = f"{perf['iqm_max_return']:.2e}"
+    iqm_inf_str = f"{perf['iqm_inference_mean']:.2e}"
+    iqm_stab_str = f"{perf['iqm_stability']:.2e}"
 
-    print(f"| {perf['config']} | {auc_str} | {final_str} | {max_str} | {inf_str} | {stab_str} |")
+    print(
+      f"| {perf['config']} | {auc_str} | {final_str} | {max_str} | {inf_str} | {stab_str} | {iqm_auc_str} | {iqm_final_str} | {iqm_max_str} | {iqm_inf_str} | {iqm_stab_str} |"
+    )
 
 
 def report(compare_dir, env_id, disable_downsampling=False, disable_smoothing=False):
@@ -508,14 +661,22 @@ def report(compare_dir, env_id, disable_downsampling=False, disable_smoothing=Fa
   config_dict = load_data(compare_dir)
   print(f"Found configs: {len(config_dict)}\n")
 
-  config_names, step_rewards_lists, episode_lists, episode_entropies_lists, kl_lists, surrogate_lists, inference_means_lists, inference_stds_lists = (
-    prepare_lists(config_dict)
-  )
+  (
+    config_names,
+    step_rewards_lists,
+    episode_lists,
+    run_numbers_lists,
+    episode_entropies_lists,
+    kl_lists,
+    surrogate_lists,
+    inference_means_lists,
+    inference_stds_lists,
+  ) = prepare_lists(config_dict)
 
   # Modify config names
   config_names = [name.replace("noise", "Noise ").replace("_", " ") for name in config_names]
 
-  colors = plt.get_cmap("tab20")(np.linspace(0, 1, len(config_names)))
+  colors = plt.get_cmap("tab20b")(np.linspace(0, 1, len(config_names)))
   color_map = dict(zip(config_names, [tuple(c) for c in colors]))
 
   total_timesteps, downsample_factor, timesteps_np = compute_timesteps_and_downsample(step_rewards_lists, disable_downsampling)
@@ -615,8 +776,24 @@ def report(compare_dir, env_id, disable_downsampling=False, disable_smoothing=Fa
   if trpo_perfs:
     plot_scatter_variations(trpo_perfs, compare_dir, "scatter_trpo_configs.png", f"TRPO on {env_id}")
 
-  # Main learning curve for all
-  plot_learning_curve(config_names, averaged_episodes, bins, color_map, compare_dir, "learning_curve.png", f"Learning Curves on {env_id}")
+  # Main learning curve for all (means + error bars)
+  plot_learning_curve(
+    config_names, averaged_episodes, bins, color_map, compare_dir, "learning_curve.png", f"Learning Curves on {env_id}", disable_smoothing=disable_smoothing
+  )
+
+  # Raw individual runs - ALL runs on ONE plot, each numbered in the side legend
+  total_runs = sum(len(episode_lists[i]) for i in range(len(config_names)))
+  plot_raw_learning_curves(
+    config_names,
+    episode_lists,
+    run_numbers_lists,
+    bins,
+    total_timesteps,
+    color_map,
+    compare_dir,
+    "raw_learning_curves.png",
+    f"Raw Individual Runs ({total_runs} total) on {env_id}",
+  )
 
   # Inference plots
   plot_inference_bar(config_names, inference_means_lists, inference_stds_lists, color_map, compare_dir, "inference_bar.png", f"Inference Rewards on {env_id}")
@@ -655,6 +832,7 @@ def report(compare_dir, env_id, disable_downsampling=False, disable_smoothing=Fa
       plot_inference_scatter(trpor_perfs, compare_dir, "trpor_inference_scatter.png", f"TRPOR Inference Stability on {env_id}")
 
   generate_report(model_performances, env_id)
+  generate_detailed_report(config_dict, config_names, episode_lists, per_run_total_steps, inference_means_lists, inference_stds_lists, env_id)
 
 
 if __name__ == "__main__":
@@ -678,7 +856,7 @@ if __name__ == "__main__":
   disable_downsampling = False
   disable_smoothing = False
 
-  base_compare_dirs = ["assets"]
+  base_compare_dirs = ["assets1"]
   for base_compare_dir in base_compare_dirs:
     subdirs = sorted([d for d in os.listdir(base_compare_dir) if os.path.isdir(os.path.join(base_compare_dir, d))])
     print("# Table of Contents\n")
