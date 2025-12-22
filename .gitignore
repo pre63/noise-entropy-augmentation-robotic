@@ -231,3 +231,5 @@ assets*/**/*.bin
 ~optuna1
 .DS_Store
 assets1
+trpo_halfcheetah.zip
+vecnormalize.pkl
