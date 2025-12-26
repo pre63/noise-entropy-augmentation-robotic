@@ -86,33 +86,16 @@ ent_coefs = sorted(
   set(
     [
       0.00001,
+      0.00005,
       0.0001,
-      0.0002,
-      0.0003,
-      0.0004,
       0.0005,
-      0.0006,
-      0.0007,
-      0.0008,
-      0.0009,
       0.001,
-      0.002,
-      0.003,
-      0.004,
       0.005,
-      0.006,
-      0.007,
-      0.008,
-      0.009,
       0.01,
-      0.02,
-      0.03,
-      0.04,
       0.05,
-      0.06,
-      0.07,
-      0.08,
-      0.09,
+      0.1,
+      0.5,
+      1.0,
     ]
   )
 )
@@ -122,21 +105,21 @@ def suggest_hyperparams(trial, env_id):
 
   params = load_default_hyperparams(env_id)
   params["ent_coef"] = trial.suggest_categorical("ent_coef", ent_coefs)
-  params["target_kl"] = trial.suggest_categorical("target_kl", [0.01, 0.015, 0.02, 0.025, 0.03, 0.04, 0.05])
-  params["learning_rate"] = trial.suggest_categorical("learning_rate", [0.0009, 0.00095, 0.001, 0.0015, 0.002, 0.0025, 0.003])
+  params["target_kl"] = trial.suggest_categorical("target_kl", [0.01, 0.015, 0.02, 0.03, 0.04, 0.05])
+  params["learning_rate"] = trial.suggest_categorical("learning_rate", [0.0001, 0.0005, 0.001, 0.0015, 0.002, 0.0025, 0.005])
   params["sub_sampling_factor"] = trial.suggest_categorical("sub_sampling_factor", [0.1, 0.5, 1.0])
   params["n_critic_updates"] = trial.suggest_categorical("n_critic_updates", [5, 10, 20])
-  params["cg_max_steps"] = trial.suggest_categorical("cg_max_steps", [5, 25])
+  params["cg_max_steps"] = trial.suggest_categorical("cg_max_steps", [5, 10, 25])
   return params
 
 
 def get_noise_level(env_id):
   noise_levels = {
     "HalfCheetah-v5": 0.05,
+    "Humanoid-v5": 0.3,
     "Walker2d-v5": 0.2,
     "Hopper-v5": 0.05,
     "Swimmer-v5": 0.15,
-    "Humanoid-v5": 0.3,
     "HumanoidStandup-v5": 0.2,
   }
   return noise_levels.get(env_id, 0.1)
@@ -167,7 +150,6 @@ def objective(trial, env_id):
       gamma=params["gamma"],
       gae_lambda=params["gae_lambda"],
       ent_coef=params["ent_coef"],
-      vf_coef=0.5,
       max_kl=params["target_kl"],
       cg_damping=params["cg_damping"],
       cg_max_steps=params["cg_max_steps"],
@@ -250,7 +232,7 @@ def objective_ent(trial, params, env_id):
 
 def main():
   env_id = "HalfCheetah-v5"
-  batch = 1000
+  batch = 500
 
   optuna_dir = "~optuna"
   os.makedirs(optuna_dir, exist_ok=True)
@@ -285,7 +267,7 @@ def main():
 
   best_params = trial.params
 
-  batch = 100
+  batch = 200
   other_envs = ["Walker2d-v5", "Hopper-v5", "Swimmer-v5", "Humanoid-v5", "HumanoidStandup-v5"]
   for env_id in other_envs:
     study_name = f"trpor-{env_id}-entcoef-tuning"
