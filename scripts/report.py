@@ -11,6 +11,7 @@ from matplotlib.lines import Line2D
 
 NUM_RUNS_PLOT = 1000
 FIG_SIZE = (24, 12)  # Wider and taller to accommodate side legend
+MAX_POINTS = 10000
 
 
 def load_file(args):
@@ -18,7 +19,12 @@ def load_file(args):
   key = filename[:-4]  # remove .pkl
   pkl_path = os.path.join(compare_dir, filename)
   with open(pkl_path, "rb") as pf:
-    return key, pickle.load(pf)
+    data = pickle.load(pf)
+    # Optimize memory: compute len(step_rewards) and delete the large list
+    step_rewards_len = len(data.get("step_rewards", []))
+    if "step_rewards" in data:
+      del data["step_rewards"]
+    return key, data, step_rewards_len
 
 
 def load_data(compare_dir):
@@ -48,17 +54,20 @@ def load_data(compare_dir):
       selected_files.append(filename)
 
   all_data = {}
+  all_step_lens = {}
   if selected_files:
     results = []
     # read file synch
     for filename in selected_files:
-      result = load_file((compare_dir, filename))
-      results.append(result)
+      key, data, step_len = load_file((compare_dir, filename))
+      results.append((key, data, step_len))
 
-    for key, data in results:
+    for key, data, step_len in results:
       all_data[key] = data
+      all_step_lens[key] = step_len
 
   config_dict = {}
+  config_step_lens = {}
   for key in all_data:
     if "_run" in key:
       parts = key.rsplit("_run", 1)
@@ -70,9 +79,11 @@ def load_data(compare_dir):
           continue
         if config not in config_dict:
           config_dict[config] = []
+          config_step_lens[config] = []
         config_dict[config].append((run_num, all_data[key]))
+        config_step_lens[config].append((run_num, all_step_lens[key]))
 
-  return config_dict
+  return config_dict, config_step_lens
 
 
 def compute_iqm(values):
@@ -134,7 +145,6 @@ def generate_detailed_report(
 
 def prepare_lists(config_dict):
   config_names = sorted(config_dict.keys())
-  step_rewards_lists = []
   episode_lists = []
   run_numbers_lists = []
   episode_entropies_lists = []  # Kept for compatibility, but optional
@@ -147,31 +157,40 @@ def prepare_lists(config_dict):
 
   for config in config_names:
     runs_data = sorted(config_dict[config])
-    step_rewards_list = [run_data["step_rewards"] for _, run_data in runs_data]
-    episode_rewards = [run_data["episode_rewards"] for _, run_data in runs_data]
-    episode_end_timesteps = [run_data["episode_end_timesteps"] for _, run_data in runs_data]
     run_numbers = [run_num for run_num, _ in runs_data]
     episode_list = []
     episode_entropies_list = []
     kl_list = []
     surrogate_list = []
+    inference_means_list = []
+    inference_stds_list = []
+    clean_inference_means_list = []
+    clean_inference_stds_list = []
     for i, (_, run_data) in enumerate(runs_data):
-      entropies = run_data.get("rollout_metrics", {}).get("entropy_mean", [])  # Assuming key
+      rollout_metrics = run_data.get("rollout_metrics", {})
+      entropies = rollout_metrics.get("entropy_mean", [])  # Assuming key
       episode_entropies_list.append(entropies)
-      kl_vals = run_data.get("rollout_metrics", {}).get("kl_div", [])  # New
+      kl_vals = rollout_metrics.get("kl_div", [])  # New
       kl_list.append(kl_vals)
-      surrogate_vals = run_data.get("rollout_metrics", {}).get("policy_objective", [])  # New
+      surrogate_vals = rollout_metrics.get("policy_objective", [])  # New
       surrogate_list.append(surrogate_vals)
+      if "rollout_metrics" in run_data:
+        del run_data["rollout_metrics"]
 
-      eps = [{"return": r, "end_timestep": t} for r, t in zip(episode_rewards[i], episode_end_timesteps[i])]
+      episode_rewards = run_data.get("episode_rewards", [])
+      episode_end_timesteps = run_data.get("episode_end_timesteps", [])
+      eps = [{"return": r, "end_timestep": t} for r, t in zip(episode_rewards, episode_end_timesteps)]
       episode_list.append(eps)
+      if "episode_rewards" in run_data:
+        del run_data["episode_rewards"]
+      if "episode_end_timesteps" in run_data:
+        del run_data["episode_end_timesteps"]
 
-    inference_means_list = [run_data.get("inference_mean_reward", 0.0) for _, run_data in runs_data]
-    inference_stds_list = [run_data.get("inference_std_reward", 0.0) for _, run_data in runs_data]
-    clean_inference_means_list = [run_data.get("clean_inference_mean_reward", 0.0) for _, run_data in runs_data]
-    clean_inference_stds_list = [run_data.get("clean_inference_std_reward", 0.0) for _, run_data in runs_data]
+      inference_means_list.append(run_data.get("inference_mean_reward", 0.0))
+      inference_stds_list.append(run_data.get("inference_std_reward", 0.0))
+      clean_inference_means_list.append(run_data.get("clean_inference_mean_reward", 0.0))
+      clean_inference_stds_list.append(run_data.get("clean_inference_std_reward", 0.0))
 
-    step_rewards_lists.append(step_rewards_list)
     episode_lists.append(episode_list)
     run_numbers_lists.append(run_numbers)
     episode_entropies_lists.append(episode_entropies_list)
@@ -184,7 +203,6 @@ def prepare_lists(config_dict):
 
   return (
     config_names,
-    step_rewards_lists,
     episode_lists,
     run_numbers_lists,
     episode_entropies_lists,
@@ -197,12 +215,12 @@ def prepare_lists(config_dict):
   )
 
 
-def compute_timesteps_and_downsample(step_rewards_lists, disable_downsampling=False):
-  total_timesteps = max(max(len(rews) for rews in step_list) if step_list else 1 for step_list in step_rewards_lists) if step_rewards_lists else 1
+def compute_timesteps_and_downsample(per_run_total_steps_lists, disable_downsampling=False):
+  total_timesteps = max(max(rews) if rews else 1 for rews in per_run_total_steps_lists) if per_run_total_steps_lists else 1
   if disable_downsampling:
     downsample_factor = 1
   else:
-    downsample_factor = max(1, total_timesteps // 1000)
+    downsample_factor = max(1, total_timesteps // MAX_POINTS)
   timesteps_np = np.arange(downsample_factor // 2 + 1, total_timesteps + 1, downsample_factor)  # Approximate mid-window points
   return total_timesteps, downsample_factor, timesteps_np
 
@@ -225,54 +243,77 @@ def compute_episode_auc(run_eps, run_total_ts):
   return auc
 
 
-def compute_averaged_curves(config_names, episode_lists, total_timesteps, bin_size=1000):
+def compute_averaged_curves(config_names, episode_lists, total_timesteps, bin_size=None):
+  if bin_size is None:
+    bin_size = max(1, total_timesteps // MAX_POINTS)
   bins = np.arange(0, total_timesteps + 1, bin_size)
-  averaged = {}
   num_bins = len(bins) - 1
+  averaged = {}
   for v_idx, config in enumerate(config_names):
     num_runs = len(episode_lists[v_idx])
     if num_runs == 0:
       averaged[config] = (np.full(num_bins, np.nan), np.full(num_bins, np.nan))
       continue
-    ys = np.full((num_runs, total_timesteps), np.nan)
+    sum_y = np.zeros(num_bins)
+    sum_y2 = np.zeros(num_bins)
+    count = np.zeros(num_bins)
     for run in range(num_runs):
       ep_infos = episode_lists[v_idx][run]
       prev_ts = 0
       last_ret = 0.0
       for ep in ep_infos:
         end_idx = min(ep["end_timestep"], total_timesteps)
-        ys[run, prev_ts:end_idx] = last_ret
+        if end_idx > prev_ts:
+          start_bin = prev_ts // bin_size
+          end_bin = (end_idx - 1) // bin_size
+          for k in range(start_bin, end_bin + 1):
+            bin_start = k * bin_size
+            bin_end = min((k + 1) * bin_size, total_timesteps)
+            overlap_start = max(prev_ts, bin_start)
+            overlap_end = min(end_idx, bin_end)
+            length = overlap_end - overlap_start
+            if length > 0:
+              sum_y[k] += last_ret * length
+              sum_y2[k] += (last_ret**2) * length
+              count[k] += length
         last_ret = ep["return"]
         prev_ts = end_idx
       if prev_ts < total_timesteps:
-        ys[run, prev_ts:] = last_ret
-    mean_y = np.nanmean(ys, axis=0)
-    std_y = np.nanstd(ys, axis=0)
-    # Bin average
-    binned_mean = np.full(num_bins, np.nan)
-    binned_std = np.full(num_bins, np.nan)
-    for k in range(num_bins):
-      start = bins[k]
-      end = bins[k + 1]
-      slice_mean = mean_y[start:end]
-      slice_std = std_y[start:end]
-      if len(slice_mean) > 0 and not np.all(np.isnan(slice_mean)):
-        binned_mean[k] = np.nanmean(slice_mean)
-        binned_std[k] = np.nanmean(slice_std)
-    averaged[config] = (binned_mean, binned_std)
+        start_bin = prev_ts // bin_size
+        end_bin = (total_timesteps - 1) // bin_size
+        for k in range(start_bin, end_bin + 1):
+          bin_start = k * bin_size
+          bin_end = min((k + 1) * bin_size, total_timesteps)
+          overlap_start = max(prev_ts, bin_start)
+          overlap_end = min(total_timesteps, bin_end)
+          length = overlap_end - overlap_start
+          if length > 0:
+            sum_y[k] += last_ret * length
+            sum_y2[k] += (last_ret**2) * length
+            count[k] += length
+    mean_y = np.divide(sum_y, count, where=count > 0)
+    mean_y[count == 0] = np.nan
+    var_y = np.divide(sum_y2, count, where=count > 0) - (mean_y**2)
+    var_y[count == 0] = np.nan
+    std_y = np.sqrt(np.maximum(var_y, 0))
+    averaged[config] = (mean_y, std_y)
   return averaged, bins[:-1]  # x for plot
 
 
-def compute_averaged_metric_over_timesteps(config_names, metric_lists, total_timesteps, per_run_total_steps, bin_size=1000):
+def compute_averaged_metric_over_timesteps(config_names, metric_lists, total_timesteps, per_run_total_steps, bin_size=None):
+  if bin_size is None:
+    bin_size = max(1, total_timesteps // MAX_POINTS)
   bins = np.arange(0, total_timesteps + 1, bin_size)
-  averaged = {}
   num_bins = len(bins) - 1
+  averaged = {}
   for v_idx, config in enumerate(config_names):
     num_runs = len(metric_lists[v_idx])
     if num_runs == 0:
       averaged[config] = (np.full(num_bins, np.nan), np.full(num_bins, np.nan))
       continue
-    ys = np.full((num_runs, total_timesteps), np.nan)
+    sum_y = np.zeros(num_bins)
+    sum_y2 = np.zeros(num_bins)
+    count = np.zeros(num_bins)
     for r in range(num_runs):
       metrics = metric_lists[v_idx][r]
       if not metrics:
@@ -283,23 +324,41 @@ def compute_averaged_metric_over_timesteps(config_names, metric_lists, total_tim
       prev_ts = 0
       for k in range(num_updates):
         end_idx = min(int((k + 1) * step_size), total_timesteps)
-        ys[r, prev_ts:end_idx] = metrics[k]
+        if end_idx > prev_ts:
+          val = metrics[k]
+          start_bin = prev_ts // bin_size
+          end_bin = (end_idx - 1) // bin_size
+          for m in range(start_bin, end_bin + 1):
+            bin_start = m * bin_size
+            bin_end = min((m + 1) * bin_size, total_timesteps)
+            overlap_start = max(prev_ts, bin_start)
+            overlap_end = min(end_idx, bin_end)
+            length = overlap_end - overlap_start
+            if length > 0:
+              sum_y[m] += val * length
+              sum_y2[m] += (val**2) * length
+              count[m] += length
         prev_ts = end_idx
       if prev_ts < total_timesteps and metrics:
-        ys[r, prev_ts:] = metrics[-1]
-    mean_y = np.nanmean(ys, axis=0)
-    std_y = np.nanstd(ys, axis=0)
-    binned_mean = np.full(num_bins, np.nan)
-    binned_std = np.full(num_bins, np.nan)
-    for k in range(num_bins):
-      start = bins[k]
-      end = bins[k + 1]
-      slice_mean = mean_y[start:end]
-      slice_std = std_y[start:end]
-      if len(slice_mean) > 0 and not np.all(np.isnan(slice_mean)):
-        binned_mean[k] = np.nanmean(slice_mean)
-        binned_std[k] = np.nanmean(slice_std)
-    averaged[config] = (binned_mean, binned_std)
+        val = metrics[-1]
+        start_bin = prev_ts // bin_size
+        end_bin = (total_timesteps - 1) // bin_size
+        for m in range(start_bin, end_bin + 1):
+          bin_start = m * bin_size
+          bin_end = min((m + 1) * bin_size, total_timesteps)
+          overlap_start = max(prev_ts, bin_start)
+          overlap_end = min(total_timesteps, bin_end)
+          length = overlap_end - overlap_start
+          if length > 0:
+            sum_y[m] += val * length
+            sum_y2[m] += (val**2) * length
+            count[m] += length
+    mean_y = np.divide(sum_y, count, where=count > 0)
+    mean_y[count == 0] = np.nan
+    var_y = np.divide(sum_y2, count, where=count > 0) - (mean_y**2)
+    var_y[count == 0] = np.nan
+    std_y = np.sqrt(np.maximum(var_y, 0))
+    averaged[config] = (mean_y, std_y)
   return averaged
 
 
@@ -453,57 +512,155 @@ def plot_raw_learning_curves(config_names, episode_lists, run_numbers_lists, x_b
   plt.close()
 
 
-def plot_combined_metrics(config, averaged_episode, averaged_kl, averaged_surrogate, bins, color_map, compare_dir, filename, title, disable_smoothing=False):
-  fig, axs = plt.subplots(3, 1, figsize=(20, 20), sharex=True)
-  color = color_map[config]
+def downsample_intervals(intervals, total_timesteps, max_points=MAX_POINTS):
+  if len(intervals) <= max_points:
+    ts = []
+    vals = []
+    for start, end, val in intervals:
+      ts.append(start)
+      vals.append(val)
+      if end < total_timesteps:
+        ts.append(end)
+        vals.append(val)  # to make stepped, but since constant, duplicate
+    return np.array(ts), np.array(vals)
+  # Sample points
+  ts = np.linspace(0, total_timesteps, max_points, dtype=int)
+  vals = []
+  interval_starts = [start for start, _, _ in intervals]
+  for t in ts:
+    k = bisect.bisect_right(interval_starts, t) - 1
+    vals.append(intervals[max(k, 0)][2])
+  return ts, np.array(vals)
+
+
+def get_metric_over_timesteps(metric_values, run_total_ts, total_timesteps, downsample_factor):
+  if not metric_values:
+    return [], []
+  num_updates = len(metric_values)
+  step_size = run_total_ts / num_updates if num_updates > 0 else 0
+  intervals = []
+  prev_ts = 0
+  for k in range(num_updates):
+    end_idx = min(int((k + 1) * step_size), total_timesteps)
+    if end_idx > prev_ts:
+      intervals.append((prev_ts, end_idx, metric_values[k]))
+    prev_ts = end_idx
+  if prev_ts < total_timesteps and metric_values:
+    intervals.append((prev_ts, total_timesteps, metric_values[-1]))
+  return intervals
+
+
+def get_returns_over_timesteps(run_eps, total_timesteps, downsample_factor):
+  if not run_eps:
+    return [], []
+  run_eps = sorted(run_eps, key=lambda e: e["end_timestep"])
+  prev_ts = 0
+  last_ret = 0.0
+  intervals = []
+  for ep in run_eps:
+    end_idx = min(ep["end_timestep"], total_timesteps)
+    if end_idx > prev_ts:
+      intervals.append((prev_ts, end_idx, last_ret))
+    last_ret = ep["return"]
+    prev_ts = end_idx
+  if prev_ts < total_timesteps:
+    intervals.append((prev_ts, total_timesteps, last_ret))
+  return intervals
+
+
+def plot_all_configs_all_runs_combined_metrics(
+  config_names,
+  episode_lists,
+  kl_lists,
+  surrogate_lists,
+  episode_entropies_lists,
+  run_numbers_lists,
+  per_run_total_steps,
+  total_timesteps,
+  color_map,
+  compare_dir,
+  filename,
+  title,
+):
+  total_runs = sum(len(run_numbers_lists[j]) for j in range(len(config_names)))
+  if total_runs == 0:
+    return
+
+  # Scale height a bit higher
+  fig_height = max(12, 7 * total_runs)  # Made a little higher
+  fig, axs = plt.subplots(2 * total_runs, 2, figsize=(24, fig_height), sharex=True)
   linewidth = 2.5
 
-  for idx, (data, y_label, sub_title) in enumerate(
-    [
-      (averaged_episode, "Average Return", "Episode Returns"),
-      (averaged_kl, "KL Divergence", "KL Divergence"),
-      (averaged_surrogate, "Surrogate Objective", "Surrogate Objective"),
-    ]
-  ):
-    ax = axs[idx]
-    ax.set_facecolor("gainsboro")
-    ax.grid(True, color="darkgrey", linestyle=":")
-    for spine in ax.spines.values():
-      spine.set_edgecolor("darkgrey")
-    mean_y, std_y = data
-    if np.all(np.isnan(mean_y)):
-      ax.text(0.5, 0.5, "No Data", ha="center", va="center", fontsize=20)
-      continue
-    if disable_smoothing:
-      smoothed_mean = mean_y
-    else:
-      smoothed_mean = smooth_data(mean_y)
-    ax.plot(bins, smoothed_mean, color=color, linewidth=linewidth)
-    sparse_step = max(1, len(bins) // 20)
-    x_sparse = bins[::sparse_step]
-    mean_sparse = mean_y[::sparse_step]
-    std_sparse_list = []
-    for k in range(len(x_sparse)):
-      start = k * sparse_step
-      end = min((k + 1) * sparse_step, len(std_y))
-      avg_std = np.nanmean(std_y[start:end]) if end > start else std_y[start]
-      std_sparse_list.append(avg_std)
-    std_sparse = np.array(std_sparse_list)
-    ax.errorbar(
-      x_sparse,
-      mean_sparse,
-      yerr=std_sparse,
-      fmt="none",
-      ecolor=color,
-      elinewidth=linewidth,
-      capsize=5,
-      uplims=False,
-      lolims=False,
-    )
-    ax.set_ylabel(y_label)
-    ax.set_title(sub_title)
-    if idx == 2:
+  current_row = 0
+  for cfg_idx, config in enumerate(config_names):
+    color = color_map[config]
+    run_numbers = run_numbers_lists[cfg_idx]
+    episode_l = episode_lists[cfg_idx]
+    kl_l = kl_lists[cfg_idx]
+    surrogate_l = surrogate_lists[cfg_idx]
+    entropy_l = episode_entropies_lists[cfg_idx]
+    per_run_ts = per_run_total_steps[cfg_idx]
+    n_runs_config = len(run_numbers)
+    for run_idx in range(n_runs_config):
+      row_start = current_row * 2
+      run_num = run_numbers[run_idx]
+      run_total_ts = per_run_ts[run_idx]
+
+      # Episode Returns
+      ax = axs[row_start, 0]
+      ax.set_facecolor("gainsboro")
+      ax.grid(True, color="darkgrey", linestyle=":")
+      for spine in ax.spines.values():
+        spine.set_edgecolor("darkgrey")
+      intervals = get_returns_over_timesteps(episode_l[run_idx], total_timesteps, 1)
+      ts, vals = downsample_intervals(intervals, total_timesteps, MAX_POINTS)
+      if len(ts) > 0:
+        ax.plot(ts, vals, color=color, linewidth=linewidth)
+      ax.set_ylabel("Return")
+      ax.set_title(f"{config} Run {run_num} - Episode Returns")
+
+      # KL Divergence
+      ax = axs[row_start, 1]
+      ax.set_facecolor("gainsboro")
+      ax.grid(True, color="darkgrey", linestyle=":")
+      for spine in ax.spines.values():
+        spine.set_edgecolor("darkgrey")
+      intervals = get_metric_over_timesteps(kl_l[run_idx], run_total_ts, total_timesteps, 1)
+      ts, vals = downsample_intervals(intervals, total_timesteps, MAX_POINTS)
+      if len(ts) > 0:
+        ax.plot(ts, vals, color=color, linewidth=linewidth)
+      ax.set_ylabel("KL")
+      ax.set_title(f"{config} Run {run_num} - KL Divergence")
+
+      # Surrogate Objective
+      ax = axs[row_start + 1, 0]
+      ax.set_facecolor("gainsboro")
+      ax.grid(True, color="darkgrey", linestyle=":")
+      for spine in ax.spines.values():
+        spine.set_edgecolor("darkgrey")
+      intervals = get_metric_over_timesteps(surrogate_l[run_idx], run_total_ts, total_timesteps, 1)
+      ts, vals = downsample_intervals(intervals, total_timesteps, MAX_POINTS)
+      if len(ts) > 0:
+        ax.plot(ts, vals, color=color, linewidth=linewidth)
+      ax.set_ylabel("Surrogate")
+      ax.set_title(f"{config} Run {run_num} - Surrogate Objective")
       ax.set_xlabel("timesteps")
+
+      # Entropy
+      ax = axs[row_start + 1, 1]
+      ax.set_facecolor("gainsboro")
+      ax.grid(True, color="darkgrey", linestyle=":")
+      for spine in ax.spines.values():
+        spine.set_edgecolor("darkgrey")
+      intervals = get_metric_over_timesteps(entropy_l[run_idx], run_total_ts, total_timesteps, 1)
+      ts, vals = downsample_intervals(intervals, total_timesteps, MAX_POINTS)
+      if len(ts) > 0:
+        ax.plot(ts, vals, color=color, linewidth=linewidth)
+      ax.set_ylabel("Entropy")
+      ax.set_title(f"{config} Run {run_num} - Entropy")
+      ax.set_xlabel("timesteps")
+
+      current_row += 1
 
   fig.suptitle(title)
   plt.tight_layout()
@@ -752,12 +909,11 @@ def generate_report(model_performances, env_id):
 def report(compare_dir, env_id, disable_downsampling=False, disable_smoothing=False):
   print(f"Generating report for experiments in {compare_dir} on environment {env_id}...\n")
   all_files = [f for f in os.listdir(compare_dir) if f.endswith(".pkl") and "_run" in f]
-  config_dict = load_data(compare_dir)
+  config_dict, config_step_lens = load_data(compare_dir)
   print(f"Found configs: {len(config_dict)}\n")
 
   (
     config_names,
-    step_rewards_lists,
     episode_lists,
     run_numbers_lists,
     episode_entropies_lists,
@@ -791,10 +947,16 @@ def report(compare_dir, env_id, disable_downsampling=False, disable_smoothing=Fa
   colors = plt.get_cmap("tab20b")(np.linspace(0, 1, len(config_names)))
   color_map = dict(zip(config_names, [tuple(c) for c in colors]))
 
-  total_timesteps, downsample_factor, timesteps_np = compute_timesteps_and_downsample(step_rewards_lists, disable_downsampling)
+  # Collect per_run_total_steps from config_step_lens
+  per_run_total_steps = []
+  for config in original_config_names:
+    if config in config_step_lens:
+      sorted_lens = sorted(config_step_lens[config])
+      per_run_total_steps.append([lens for _, lens in sorted_lens])
+    else:
+      per_run_total_steps.append([])
 
-  # Collect per_run_total_steps
-  per_run_total_steps = [[len(run_data["step_rewards"]) for _, run_data in sorted(config_dict[config])] for config in original_config_names]
+  total_timesteps, downsample_factor, timesteps_np = compute_timesteps_and_downsample(per_run_total_steps, disable_downsampling)
 
   averaged_episodes, bins = compute_averaged_curves(config_names, episode_lists, total_timesteps)
 
@@ -820,74 +982,25 @@ def report(compare_dir, env_id, disable_downsampling=False, disable_smoothing=Fa
   # Plot scatter for all configs
   plot_scatter_variations(model_performances, compare_dir, "scatter_all_configs.png", f"All Configs on {env_id}")
 
-  # Find best TRPOR
+  # Combined plot for all configs and all runs
+  plot_all_configs_all_runs_combined_metrics(
+    config_names,
+    episode_lists,
+    kl_lists,
+    surrogate_lists,
+    episode_entropies_lists,
+    run_numbers_lists,
+    per_run_total_steps,
+    total_timesteps,
+    color_map,
+    compare_dir,
+    "combined.png",
+    f"Combined Metrics for All Models on {env_id} - All Runs",
+  )
+
+  # Find best TRPOR for other plots if needed
   trpor_perfs = [p for p in model_performances if "trpor" in p["config"].lower()]
   if trpor_perfs:
-    best_trpor = max(trpor_perfs, key=lambda x: x["avg_auc"])
-    best_config = best_trpor["config"]
-    best_color = color_map[best_config]
-
-    # Plot episode for best TRPOR
-    plot_learning_curve(
-      [best_config],
-      {best_config: averaged_episodes[best_config]},
-      bins,
-      color_map,
-      compare_dir,
-      "best_trpor_episode.png",
-      f"Best TRPOR Episode Returns on {env_id}",
-    )
-
-    # Plot KL for best TRPOR
-    plot_learning_curve(
-      [best_config],
-      {best_config: averaged_kl[best_config]},
-      bins,
-      color_map,
-      compare_dir,
-      "best_trpor_kl.png",
-      f"Best TRPOR KL Divergence on {env_id}",
-      ylabel="KL Divergence",
-    )
-
-    # Plot surrogate for best TRPOR
-    plot_learning_curve(
-      [best_config],
-      {best_config: averaged_surrogate[best_config]},
-      bins,
-      color_map,
-      compare_dir,
-      "best_trpor_surrogate.png",
-      f"Best TRPOR Surrogate Objective on {env_id}",
-      ylabel="Surrogate Objective",
-    )
-
-    # Plot entropy for best TRPOR
-    plot_learning_curve(
-      [best_config],
-      {best_config: averaged_entropies[best_config]},
-      bins,
-      color_map,
-      compare_dir,
-      "best_trpor_entropy.png",
-      f"Best TRPOR Entropy on {env_id}",
-      ylabel="Entropy",
-    )
-
-    # Combined plot for best TRPOR
-    plot_combined_metrics(
-      best_config,
-      averaged_episodes[best_config],
-      averaged_kl[best_config],
-      averaged_surrogate[best_config],
-      bins,
-      color_map,
-      compare_dir,
-      "best_trpor_combined.png",
-      f"Combined Metrics for Best TRPOR on {env_id}",
-      disable_smoothing,
-    )
-
     # Scatter for TRPOR
     plot_scatter_variations(trpor_perfs, compare_dir, "scatter_trpor_configs.png", f"TRPOR on {env_id}")
 

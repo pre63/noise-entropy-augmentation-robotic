@@ -81,3 +81,8 @@ domain: fix
 bp: fix
 	@source .venv/bin/activate; \
 	CUDA_VISIBLE_DEVICES=0 PYTHONPATH=. python -m scripts.bp 2>&1 | tee -a ~logs/bp
+
+
+video: fix
+	@source .venv/bin/activate; \
+	CUDA_VISIBLE_DEVICES=0 PYTHONPATH=. python -m scripts.video 2>&1 | tee -a ~logs/video
